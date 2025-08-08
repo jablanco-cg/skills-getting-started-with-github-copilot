@@ -17,7 +17,8 @@ app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
 
 # MongoDB connection
-client = MongoClient('mongodb://localhost:27017/')
+mongo_uri = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/")
+client = MongoClient(mongo_uri)
 db = client['school_activities']
 activities_collection = db['activities']
 
@@ -88,8 +89,10 @@ activities = {
 }
 
 
-@app.on_event("startup")
-async def startup_event():
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Initialize the database with activities if it's empty"""
     print("Checking database...")
     try:
@@ -102,6 +105,9 @@ async def startup_event():
             print(f"Database already contains {activities_collection.count_documents({})} activities")
     except Exception as e:
         print(f"Error during database initialization: {e}")
+    yield
+
+app.router.lifespan_context = lifespan
 
 @app.get("/")
 def root():
@@ -121,10 +127,13 @@ def signup_for_activity(activity_name: str, email: str):
     activity = activities_collection.find_one({"name": activity_name})
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
-
     # Validate student is not already signed up
     if email in activity["participants"]:
         raise HTTPException(status_code=400, detail="Student already signed up")
+
+    # Validate activity is not at maximum capacity
+    if len(activity["participants"]) >= activity["max_participants"]:
+        raise HTTPException(status_code=400, detail="Activity is at maximum capacity")
 
     # Update the participants list
     activities_collection.update_one(
@@ -132,4 +141,5 @@ def signup_for_activity(activity_name: str, email: str):
         {"$push": {"participants": email}}
     )
 
+    return {"message": f"Signed up {email} for {activity_name}"}
     return {"message": f"Signed up {email} for {activity_name}"}

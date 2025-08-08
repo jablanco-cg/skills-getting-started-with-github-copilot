@@ -10,16 +10,23 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+from pymongo import MongoClient
+from typing import Dict, Any
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
+
+# MongoDB connection
+client = MongoClient('mongodb://localhost:27017/')
+db = client['school_activities']
+activities_collection = db['activities']
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory activity database
+# Initial activities data for MongoDB
 activities = {
     "Chess Club": {
         "description": "Learn strategies and compete in chess tournaments",
@@ -81,30 +88,48 @@ activities = {
 }
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize the database with activities if it's empty"""
+    print("Checking database...")
+    try:
+        if activities_collection.count_documents({}) == 0:
+            print("Database is empty. Populating with initial data...")
+            for name, details in activities.items():
+                activities_collection.insert_one({"name": name, **details})
+            print(f"Successfully populated database with {len(activities)} activities")
+        else:
+            print(f"Database already contains {activities_collection.count_documents({})} activities")
+    except Exception as e:
+        print(f"Error during database initialization: {e}")
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
 
-
 @app.get("/activities")
 def get_activities():
-    return activities
-
+    """Get all activities"""
+    cursor = activities_collection.find({}, {'_id': 0})
+    activities_list = list(cursor)
+    return {activity.pop('name'): activity for activity in activities_list}
 
 @app.post("/activities/{activity_name}/signup")
 def signup_for_activity(activity_name: str, email: str):
     """Sign up a student for an activity"""
     # Validate activity exists
-    if activity_name not in activities:
+    activity = activities_collection.find_one({"name": activity_name})
+    if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    # Get the specific activity
-    activity = activities[activity_name]
-
-    # Add student
     # Validate student is not already signed up
     if email in activity["participants"]:
         raise HTTPException(status_code=400, detail="Student already signed up")
 
-    activity["participants"].append(email)
+    # Update the participants list
+    activities_collection.update_one(
+        {"name": activity_name},
+        {"$push": {"participants": email}}
+    )
+
     return {"message": f"Signed up {email} for {activity_name}"}
